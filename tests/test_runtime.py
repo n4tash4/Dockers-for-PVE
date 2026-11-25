@@ -58,6 +58,35 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
 
     @unittest.skipUnless(os.geteuid() == 0, 'Runtime installation requires host root')
+    def test_private_control_directory_lets_the_runtime_account_read_its_configuration(self):
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            base.chmod(0o755)
+            control = base / 'etc-betterdocker'
+            control.mkdir(mode=0o700)
+            secret = control / 'recovery.key'
+            secret.write_text('private')
+            secret.chmod(0o600)
+            home = base / 'state/runtime'
+            account = SimpleNamespace(pw_uid=12345, pw_gid=12345, pw_dir=str(home))
+            with patch.object(runtime_install, 'HOME', str(home)), \
+                    patch.object(runtime, 'CONFIG', control / 'runtime.json'), \
+                    patch.object(runtime_install, 'preflight'), \
+                    patch.object(runtime_install.pwd, 'getpwnam', return_value=account), \
+                    patch.object(runtime_install, 'command', return_value=subprocess.CompletedProcess([], 0, stdout='betterdocker')), \
+                    patch.object(runtime_install, 'subordinate', return_value=1048576), \
+                    patch.object(runtime, 'load', side_effect=RuntimeError('fixture stops before daemon startup')):
+                with self.assertRaisesRegex(RuntimeError, 'fixture stops before daemon startup'):
+                    runtime_install.initialize('rootless')
+            self.assertEqual(control.stat().st_mode & 0o777, 0o711)
+            self.assertEqual(control.stat().st_uid, 0)
+            probe = 'import sys\nfrom pathlib import Path\nprint(len(Path(sys.argv[1]).read_text()))\ntry:\n    Path(sys.argv[2]).read_text()\nexcept PermissionError:\n    print("private")\n'
+            result = subprocess.run([sys.executable, '-c', probe, str(control / 'runtime.json'), str(secret)],
+                user=account.pw_uid, group=account.pw_gid, extra_groups=[], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(result.stdout.splitlines()[1], 'private')
+    @unittest.skipUnless(os.geteuid() == 0, 'Runtime installation requires host root')
     def test_fresh_private_runtime_parent_allows_traversal_without_exposing_siblings(self):
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as folder:

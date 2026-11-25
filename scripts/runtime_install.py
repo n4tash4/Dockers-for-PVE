@@ -249,6 +249,11 @@ def initialize(mode, conversion=False):
                 socket='/run/user/' + str(user.pw_uid) + '/docker.sock', data=HOME + '/docker',
                 subuid=subuid, subgid=subgid, count=65536)
     save(runtime.CONFIG, json.dumps(data, indent=2) + '\n')
+    # Engine requests run as the runtime account and load runtime.json; install.sh creates this directory under umask 077
+    with anchored(runtime.CONFIG.parent, directory=True) as parent:
+        if os.fstat(parent).st_uid != 0:
+            raise ValueError('Runtime configuration directory must be root-owned')
+        os.fchmod(parent, 0o711)
     selected = runtime.load()
     save(home / '.config/docker/daemon.json', json.dumps({
         'data-root': selected.data, 'userland-proxy': False, 'ip-masq': False, 'ip-forward-no-drop': True,
